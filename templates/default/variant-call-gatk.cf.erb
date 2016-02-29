@@ -1,0 +1,419 @@
+%% =============================================================================
+%% Task definitions
+%% =============================================================================
+
+% gunzip
+deftask gunzip( out( File ) : gz( File ) )in bash *{
+  gzip -c -d $gz > $out
+}*
+
+% FastQC
+deftask fastqc( zip( File ) : fq( File ) )in bash *{
+    fastqc -f fastq --noextract -o ./ $fq
+    zip=`ls *.zip`
+}*
+
+% SAMtools
+deftask samtools-faidx( fai( File ) : fa( File ) )in bash *{
+  samtools faidx $fa
+  fai=$fa.fai
+}*
+
+deftask tabix( tbi( File ) : vcf( File ) )in bash *{
+  tabix $vcf
+  tbi=$vcf.tbi
+}*
+
+% BWA
+deftask bwa-build( idx( File ) : fa( File ) )in bash *{
+  idx=bwaidx.tar
+  bwa index -p bwaidx $fa
+  tar cf $idx --remove-files bwaidx.*
+}*
+
+deftask bwa-align( bam( File ) : idx( File ) [fq1( File ) fq2( File ) group] )in bash *{
+  tar xf $idx
+  bwa mem -R "@RG\tID:group${group}\tSM:sample1\tPL:illumina\tLB:lib1\tPU:unit1" bwaidx $fq1 $fq2 -t 4 | samtools view -b - > $bam
+}*
+
+% Picard tools
+deftask picard-sort( sortedbam( File ) : bam( File ) )in bash *{
+  picard SortSam I=$bam O=$sortedbam SO=coordinate
+}*
+
+deftask picard-merge( mergedbam( File ) : <bam( File )> )in bash *{
+  picard MergeSamFiles I=$bam SO=coordinate AS=true O=$mergedbam
+}*
+
+deftask picard-dedup( dedupbam( File ) dedupmetrics( File ) : bam( File ) ) in bash *{
+  dedupbam=dedup.bam
+  picard MarkDuplicates I=$bam O=$dedupbam METRICS_FILE=$dedupmetrics
+}*
+
+deftask picard-dict( dict( File ) : fa( File ) )in bash *{
+  ln -s $fa ref.fa
+  picard CreateSequenceDictionary REFERENCE=ref.fa OUTPUT=$dict
+}*
+
+deftask picard-bai( bai( File ) : bam( File ) )in bash *{
+  picard BuildBamIndex I=$bam O=$bai
+}*
+
+% GATK
+deftask gatk-createtarget(
+    interval( File )
+  : [fa( File ) fai( File ) dict( File )] [bam( File ) bai( File )]
+    <known( File )> <tbi( File )> )in bash *{
+
+  interval=target_intervals.list
+
+  ln -sf $fa ref.fa
+  ln -sf $fai ref.fa.fai
+  ln -sf $dict ref.dict
+  ln -sf $bai $bam.bai
+
+  for ((i=0; i < ${#known[@]}; i+=1))
+  do
+    ln -sf ${tbi[$i]} ${known[$i]}.tbi
+  done
+
+  gatk -T RealignerTargetCreator -R ref.fa -I $bam -o $interval \
+    `printf " -known %s" ${known[@]}`
+}*
+
+deftask gatk-realign(
+    realignedbam( File ) realignedbai( File )
+  : [fa( File ) fai( File ) dict( File )]
+    [bam( File ) bai( File ) interval( File )]
+    <known( File )> <tbi( File )> )in bash *{
+
+  realignedbam=realigned_reads.bam
+  realignedbai=realigned_reads.bai
+
+  ln -sf $fa ref.fa
+  ln -sf $fai ref.fa.fai
+  ln -sf $dict ref.dict
+  ln -sf $bai $bam.bai
+
+  for ((i=0; i < ${#known[@]}; i+=1))
+  do
+    ln -sf ${tbi[$i]} ${known[$i]}.tbi
+  done
+  
+  gatk -T IndelRealigner \
+    -R ref.fa -I $bam -targetIntervals $interval -o $realignedbam \
+    `printf " -known %s" ${known[@]}`
+}*
+
+deftask gatk-baserecal(
+    recal( File )
+  : [fa( File ) fai( File ) dict( File )]
+    [bam( File ) bai( File )]
+    <known( File )> <tbi( File )> )in bash *{
+
+  recal=recal_data.grp
+
+  ln -sf $fa ref.fa
+  ln -sf $fai ref.fa.fai
+  ln -sf $dict ref.dict
+  ln -sf $bai $bam.bai
+
+  for ((i=0; i < ${#known[@]}; i+=1))
+  do
+    ln -sf ${tbi[$i]} ${known[$i]}.tbi
+  done
+
+  gatk -T BaseRecalibrator -R ref.fa -I $bam -o $recal \
+  `printf " -knownSites %s" ${known[@]}`
+}*
+
+deftask gatk-printreads(
+    recalbam( File ) recalbai( File )
+  : [fa( File ) fai( File ) dict( File )]
+    [bam( File ) bai( File ) recal( File )] ) in bash *{
+
+  recalbam=recal_reads.bam
+  recalbai=recal_reads.bai
+
+  ln -sf $fa ref.fa
+  ln -sf $fai ref.fa.fai
+  ln -sf $dict ref.dict
+  ln -sf $bai $bam.bai
+
+  gatk -T PrintReads -R ref.fa -I $bam -BQSR $recal -o recal_reads.bam
+}*
+
+deftask gatk-haplotypecall(
+    variants( File ) idx( File )
+  : [fa( File ) fai( File ) dict( File )] [bam( File ) bai( File )]
+    [dbsnp_vcf( File ) dbsnp_vcf_tbi( File )] ) in bash *{
+
+  variants=raw_variants.vcf
+  idx=raw_variants.vcf.idx
+
+  ln -sf $fa ref.fa
+  ln -sf $fai ref.fa.fai
+  ln -sf $dict ref.dict
+  ln -sf $bai $bam.bai
+  ln -sf $dbsnp_vcf_tbi $dbsnp_vcf.tbi
+
+  gatk -T HaplotypeCaller -R ref.fa -I $bam -o $variants \
+    --genotyping_mode DISCOVERY \
+    --output_mode EMIT_VARIANTS_ONLY \
+    --dbsnp $dbsnp_vcf
+}*
+
+deftask gatk-recal-snp(
+    recal( File ) recal_idx( File ) tranches( File )
+    tranches_report( File ) recal_report( File )
+  : [fa( File ) fai( File ) dict( File )]
+    [vcf( File ) vcf_idx( File )]
+    [hapmap_vcf( File ) hapmap_vcf_tbi( File )]
+    [omni_vcf( File ) omni_vcf_tbi( File )]
+    [phase1_vcf( File ) phase1_vcf_tbi( File )]
+    [dbsnp_vcf( File ) dbsnp_vcf_tbi( File )] ) in bash *{
+
+  recal=recalibrate_SNP.recal
+  recal_idx=recalibrate_SNP.recal.idx
+  tranches=recalibrate_SNP.tranches
+  tranches_report=recalibrate_SNP.tranches.pdf
+  recal_report=recalibrate_SNP_plots.R.pdf
+
+  ln -sf $fa ref.fa
+  ln -sf $fai ref.fa.fai
+  ln -sf $dict ref.dict
+  ln -sf $idx $vcf.idx
+  ln -sf $hapmap_vcf_tbi $hapmap_vcf.tbi
+  ln -sf $omni_vcf_tbi $omni_vcf.tbi
+  ln -sf $phase1_vcf_tbi $phase1_vcf.tbi
+  ln -sf $dbsnp_vcf_tbi $dbsnp_vcf.tbi
+
+  gatk -T VariantRecalibrator -R ref.fa -input $vcf \
+    -recalFile $recal \
+    -tranchesFile $tranches \
+    -rscriptFile recalibrate_SNP_plots.R \
+    -mode SNP \
+    -resource:hapmap,known=false,training=true,truth=true,prior=15.0 $hapmap_vcf \
+    -resource:omni,known=false,training=true,truth=true,prior=12.0 $omni_vcf \
+    -resource:1000g,known=false,training=true,truth=false,prior=10.0 $phase1_vcf \
+    -resource:dbsnp,known=true,training=false,truth=false,prior=2.0 $dbsnp_vcf \
+    -an QD -an MQ -an MQRankSum -an ReadPosRankSum -an FS -an SOR -an DP
+}*
+
+deftask gatk-apply-recal(
+    recalvcf( File ) recalvcf_idx( File )
+  : mode filter
+    [fa( File ) fai( File ) dict( File )]
+    [vcf( File ) vcf_idx( File )]
+    [recal( File ) recal_idx( File )]
+    tranches( File ) ) in bash *{
+
+  recalvcf=recalibrated.vcf
+  recalvcf_idx=recalibrated.vcf.idx
+
+  ln -sf $fa ref.fa
+  ln -sf $fai ref.fa.fai
+  ln -sf $dict ref.dict
+  ln -sf $vcf_idx $vcf.idx
+  ln -sf $recal_idx $recal.idx
+
+  gatk -T ApplyRecalibration -R ref.fa -input raw_variants.vcf \
+    -mode $mode \
+    --ts_filter_level $filter \
+    -recalFile $recal \
+    -tranchesFile $tranches \
+    -o $recalvcf
+}*
+
+deftask gatk-recal-indel(
+    recal( File ) recal_idx( File ) tranches( File ) recal_report( File )
+  : [fa( File ) fai( File ) dict( File )]
+    [vcf( File ) vcf_idx( File )]
+    [mills_vcf( File ) mills_vcf_tbi( File )]
+    [dbsnp_vcf( File ) dbsnp_vcf_tbi( File )]
+  ) in bash *{
+
+  recal=recalibrate_INDEL.recal
+  recal_idx=recalibrate_INDEL.recal.idx
+  tranches=recalibrate_INDEL.tranches
+  recal_report=recalibrate_INDEL_plots.R.pdf
+
+  ln -sf $fa ref.fa
+  ln -sf $fai ref.fa.fai
+  ln -sf $dict ref.dict
+  ln -sf $vcf_idx $vcf.idx
+
+  gatk -T VariantRecalibrator -R ref.fa -input $vcf \
+    -recalFile $recal \
+    -tranchesFile $tranches \
+    -rscriptFile recalibrate_INDEL_plots.R \
+    -mode INDEL --maxGaussians 4 \
+    -resource:mills,known=false,training=true,truth=true,prior=12.0 $mills_vcf \
+    -resource:dbsnp,known=true,training=false,truth=false,prior=2.0 $dbsnp_vcf \
+    -an QD -an DP -an FS -an SOR -an ReadPosRankSum -an MQRankSum
+}*
+
+%% =============================================================================
+%% Input data
+%% =============================================================================
+
+fa_gz = "Homo_sapiens_assembly38.fasta.gz";
+
+group = 1 2 3 4 5;
+
+fq1 = "kgenomes/SRR062634_1.filt.fastq.gz" "kgenomes/SRR062635_1.filt.fastq.gz"
+      "kgenomes/SRR062641_1.filt.fastq.gz" "kgenomes/SRR077487_1.filt.fastq.gz"
+      "kgenomes/SRR081241_1.filt.fastq.gz";
+
+fq2 = "kgenomes/SRR062634_2.filt.fastq.gz" "kgenomes/SRR062635_2.filt.fastq.gz"
+      "kgenomes/SRR062641_2.filt.fastq.gz" "kgenomes/SRR077487_2.filt.fastq.gz"
+      "kgenomes/SRR081241_2.filt.fastq.gz";
+
+% known variants
+mills_vcf           = "Mills_and_1000G_gold_standard.indels.hg38.vcf.gz";
+kgenomes_phase1_vcf = "1000G_phase1.snps.high_confidence.hg38.vcf.gz";
+kgenomes_omni_vcf   = "1000G_omni2.5.hg38.vcf.gz";
+dbsnp138_vcf        = "Homo_sapiens_assembly38.dbsnp138.vcf.gz";
+hapmap_vcf          = "hapmap_3.3.hg38.vcf.gz";
+
+%% =============================================================================
+%% Workflow definition
+%% =============================================================================
+
+fa = gunzip( gz: fa_gz );
+fai = samtools-faidx( fa: fa );
+bwaidx = bwa-build( fa: fa );
+dict = picard-dict( fa: fa );
+
+mills_vcf_tbi           = tabix( vcf: mills_vcf );
+kgenomes_phase1_vcf_tbi = tabix( vcf: kgenomes_phase1_vcf );
+kgenomes_omni_vcf_tbi   = tabix( vcf: kgenomes_omni_vcf );
+dbsnp138_vcf_tbi        = tabix( vcf: dbsnp138_vcf );
+hapmap_vcf_tbi          = tabix( vcf: hapmap_vcf );
+
+qc = fastqc( fq: fq1 fq2 );
+
+%% Read Mapping %% =============================================================
+
+aligned_reads = bwa-align(
+  idx:    bwaidx,
+  fq1:    fq1,
+  fq2:    fq2,
+  group: group );
+
+sorted_reads = picard-sort( bam: aligned_reads );
+merged_reads = picard-merge( bam: sorted_reads );
+dedup_reads  = picard-dedup( bam: merged_reads );
+dedup_reads_bai = picard-bai( bam: dedup_reads );
+
+%% Local Realignment %% ========================================================
+
+target_intervals = gatk-createtarget(
+  fa:    fa,
+  fai:   fai,
+  dict:  dict,
+  bam:   dedup_reads,
+  bai:   dedup_reads_bai,
+  known: kgenomes_phase1_vcf mills_vcf,
+  tbi:   kgenomes_phase1_vcf_tbi mills_vcf_tbi );
+
+realigned_reads realigned_reads_bai = gatk-realign(
+  fa:       fa,
+  fai:      fai,
+  dict:     dict,
+  bam:      dedup_reads,
+  bai:      dedup_reads_bai,
+  interval: target_intervals,
+  known:    kgenomes_phase1_vcf mills_vcf,
+  tbi:      kgenomes_phase1_vcf_tbi mills_vcf_tbi );
+
+%% Base Recalibration %% =======================================================
+
+recal_data = gatk-baserecal(
+  fa:    fa,
+  fai:   fai,
+  dict:  dict,
+  bam:   realigned_reads,
+  bai:   realigned_reads_bai,
+  known: kgenomes_phase1_vcf mills_vcf dbsnp138_vcf,
+  tbi:   kgenomes_phase1_vcf_tbi mills_vcf_tbi dbsnp138_vcf_tbi );
+
+recal_reads recal_reads_bai = gatk-printreads(
+  fa:    fa,
+  fai:   fai,
+  dict:  dict,
+  bam:   realigned_reads,
+  bai:   realigned_reads_bai,
+  recal: recal_data );
+
+%% Variant Calling %% ==========================================================
+
+raw_variants raw_variants_idx = gatk-haplotypecall(
+  fa:            fa,
+  fai:           fai,
+  dict:          dict,
+  bam:           recal_reads,
+  bai:           recal_reads_bai,
+  dbsnp_vcf:     dbsnp138_vcf,
+  dbsnp_vcf_tbi: dbsnp138_vcf_tbi );
+
+%% VQSR SNP %% =================================================================
+
+recalibrate_snp recalibrate_snp_idx tranches_snp tranches_report recal_report = gatk-recal-snp(
+  fa:             fa,
+  fai:            fai,
+  dict:           dict,
+  vcf:            raw_variants,
+  vcf_idx:        raw_variants_idx,
+  hapmap_vcf:     hapmap_vcf,
+  hapmap_vcf_tbi: hapmap_vcf_tbi,
+  omni_vcf:       kgenomes_omni_vcf,
+  omni_vcf_tbi:   kgenomes_omni_vcf_tbi,
+  phase1_vcf:     kgenomes_phase1_vcf,
+  phase1_vcf_tbi: kgenomes_phase1_vcf_tbi,
+  dbsnp_vcf:      dbsnp138_vcf,
+  dbsnp_vcf_tbi:  dbsnp138_vcf_tbi );
+
+recalibrated_snps_raw_indels_vcf recalibrated_snps_raw_indels_vcf_idx = gatk-apply-recal(
+  mode:      "SNP",
+  filter:    "99.5",
+  fa:        fa,
+  fai:       fai,
+  dict:      dict,
+  vcf:       raw_variants,
+  vcf_idx:   raw_variants_idx,
+  recal:     recalibrate_snp,
+  recal_idx: recalibrate_snp_idx,
+  tranches:   tranches_snp );
+
+%% VQSR INDEL %% ===============================================================
+
+recalibrate_indel recalibrate_indel_idx tranches_indel recal_report = gatk-recal-indel(
+  fa:            fa,
+  fai:           fai,
+  dict:          dict,
+  vcf:           recalibrated_snps_raw_indels_vcf,
+  vcf_idx:       recalibrated_snps_raw_indels_vcf_idx,
+  mills_vcf:     mills_vcf,
+  mills_vcf_tbi: mills_vcf_tbi,
+  dbsnp_vcf:     dbsnp138_vcf,
+  dbsnp_vcf_tbi: dbsnp138_vcf_tbi );
+
+recalibrated_variants_vcf recalibrated_variants_vcf_idx = gatk-apply-recal(
+  mode:      "INDEL",
+  filter:    "99.0",
+  fa:        fa,
+  fai:       fai,
+  dict:      dict,
+  vcf:       recalibrated_snps_raw_indels_vcf,
+  vcf_idx:   recalibrated_snps_raw_indels_vcf_idx,
+  recal:     recalibrate_indel,
+  recal_idx: recalibrate_indel_idx,
+  tranches:  tranches_indel );
+
+%% =============================================================================
+%% Query
+%% =============================================================================
+
+recalibrated_variants_vcf qc;
+
