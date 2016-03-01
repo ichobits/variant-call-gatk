@@ -217,7 +217,7 @@ deftask gatk-apply-recal(
   ln -sf $vcf_idx $vcf.idx
   ln -sf $recal_idx $recal.idx
 
-  gatk -T ApplyRecalibration -R ref.fa -input raw_variants.vcf \
+  gatk -T ApplyRecalibration -R ref.fa -input $vcf \
     -mode $mode \
     --ts_filter_level $filter \
     -recalFile $recal \
