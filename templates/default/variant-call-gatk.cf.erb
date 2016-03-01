@@ -242,7 +242,7 @@ deftask gatk-recal-indel(
   ln -sf $fai ref.fa.fai
   ln -sf $dict ref.dict
   ln -sf $vcf_idx $vcf.idx
-  ln -sf $mills_vcf_tbi $miss_vcf.tbi
+  ln -sf $mills_vcf_tbi $mills_vcf.tbi
   ln -sf $dbsnp_vcf_tbi $dbsnp_vcf.tbi
 
   gatk -T VariantRecalibrator -R ref.fa -input $vcf \
