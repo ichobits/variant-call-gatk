@@ -361,7 +361,7 @@ raw_variants raw_variants_idx = gatk-haplotypecall(
 
 %% VQSR SNP %% =================================================================
 
-recalibrate_snp recalibrate_snp_idx tranches_snp tranches_report recal_report = gatk-recal-snp(
+recalibrate_snp recalibrate_snp_idx tranches_snp tranches_report recal_report_snp = gatk-recal-snp(
   fa:             fa,
   fai:            fai,
   dict:           dict,
@@ -390,7 +390,7 @@ recalibrated_snps_raw_indels_vcf recalibrated_snps_raw_indels_vcf_idx = gatk-app
 
 %% VQSR INDEL %% ===============================================================
 
-recalibrate_indel recalibrate_indel_idx tranches_indel recal_report = gatk-recal-indel(
+recalibrate_indel recalibrate_indel_idx tranches_indel recal_report_indel = gatk-recal-indel(
   fa:            fa,
   fai:           fai,
   dict:          dict,
@@ -417,5 +417,5 @@ recalibrated_variants_vcf recalibrated_variants_vcf_idx = gatk-apply-recal(
 %% Query
 %% =============================================================================
 
-recalibrated_variants_vcf qc;
+recalibrated_variants_vcf qc tranches_report recal_report_snp recal_report_indel;
 
