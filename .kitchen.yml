@@ -28,5 +28,6 @@ platforms:
 suites:
   - name: default
     run_list:
+      - recipe[variant-call-gatk::_common]
       - recipe[variant-call-gatk::default]
     attributes:
