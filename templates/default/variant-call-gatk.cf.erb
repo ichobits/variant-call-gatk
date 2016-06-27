@@ -4,6 +4,7 @@
 
 % gunzip
 deftask gunzip( out( File ) : gz( File ) )in bash *{
+  out=unzipped_${gz%.gz}
   gzip -c -d $gz > $out
 }*
 
@@ -33,15 +34,18 @@ deftask bwa-build( idx( File ) : fa( File ) )in bash *{
 
 deftask bwa-align( bam( File ) : idx( File ) [fq1( File ) fq2( File ) group] )in bash *{
   tar xf $idx
+  bam=aligned_reads.bam
   bwa mem -R "@RG\tID:group${group}\tSM:sample1\tPL:illumina\tLB:lib1\tPU:unit1" bwaidx $fq1 $fq2 -t 4 | samtools view -b - > $bam
 }*
 
 % Picard tools
 deftask picard-sort( sortedbam( File ) : bam( File ) )in bash *{
+  sortedbam=sorted.bam
   picard SortSam I=$bam O=$sortedbam SO=coordinate
 }*
 
 deftask picard-merge( mergedbam( File ) : <bam( File )> )in bash *{
+  mergedbam=merged.bam
   picard MergeSamFiles I=$bam SO=coordinate AS=true O=$mergedbam
 }*
 
@@ -52,10 +56,12 @@ deftask picard-dedup( dedupbam( File ) dedupmetrics( File ) : bam( File ) ) in b
 
 deftask picard-dict( dict( File ) : fa( File ) )in bash *{
   ln -s $fa ref.fa
+  dict=$fa.dict
   picard CreateSequenceDictionary REFERENCE=ref.fa OUTPUT=$dict
 }*
 
 deftask picard-bai( bai( File ) : bam( File ) )in bash *{
+  bai=$bam.bai
   picard BuildBamIndex I=$bam O=$bai
 }*
 
