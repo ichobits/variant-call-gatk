@@ -51,6 +51,7 @@ deftask picard-merge( mergedbam( File ) : <bam( File )> )in bash *{
 
 deftask picard-dedup( dedupbam( File ) dedupmetrics( File ) : bam( File ) ) in bash *{
   dedupbam=dedup.bam
+  dedupmetrics=dedupmetrics.txt
   picard MarkDuplicates I=$bam O=$dedupbam METRICS_FILE=$dedupmetrics
 }*
 
